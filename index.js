@@ -195,7 +195,7 @@ async function connectToWhatsApp() {
         }
     }
 
-    // Pairing Code (දෝෂය වළක්වා ගැනීමට කාලය තත්පර 8 දක්වා වැඩි කරන ලදී)
+    // Pairing Code
     if (!sock.authState.creds.registered) {
         setTimeout(async () => {
             try {
