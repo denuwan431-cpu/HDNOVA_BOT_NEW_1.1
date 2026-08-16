@@ -35,13 +35,12 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
 
 // ================================================================
-// MongoDB Connection (FIX: no more process.exit on transient errors,
-// auto-reconnect instead of killing the whole bot)
+// MongoDB Connection
 // ================================================================
 const mongoURI = process.env.MONGO_URI;
 if (!mongoURI) {
     console.error('❌ MONGO_URI not found in environment variables!');
-    process.exit(1); // this one is fine to exit on — it's a config error, not transient
+    process.exit(1);
 }
 
 mongoose.set('strictQuery', true);
@@ -127,8 +126,6 @@ async function saveSettings() {
 
 // ================================================================
 // Message Store for Anti-Delete
-// FIX: was an unbounded Map that only ever grew. Now entries expire
-// after 24h via a periodic sweep, so memory doesn't leak forever.
 // ================================================================
 const messageStore = new Map();
 const MESSAGE_STORE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -143,7 +140,7 @@ setInterval(() => {
         }
     }
     if (removed > 0) console.log(`🧹 Cleared ${removed} expired message-store entries`);
-}, 60 * 60 * 1000); // sweep every hour
+}, 60 * 60 * 1000);
 
 // ================================================================
 // Statistics
@@ -185,15 +182,6 @@ async function connectToWhatsApp() {
     const phoneNumber = process.env.PHONE_NUMBER;
     const ownerJid = jidNormalizedUser(`${phoneNumber}@s.whatsapp.net`);
 
-    // ------------------------------------------------------------
-    // FIX: robust owner check.
-    // Old code compared raw JIDs directly, which breaks when WhatsApp
-    // sends a "LID" (linked-id) formatted JID instead of the plain
-    // phone-number JID for participant/remoteJid — in that case the
-    // old check silently evaluated to false and the bot ignored the
-    // owner's own messages. jidNormalizedUser() + comparing against
-    // sock.user.id (the account's own confirmed identity) fixes this.
-    // ------------------------------------------------------------
     function checkIsOwner(m, from) {
         if (m.key.fromMe) return true;
         try {
@@ -203,12 +191,11 @@ async function connectToWhatsApp() {
                 : jidNormalizedUser(from);
             return senderJid === ownerJid || (selfJid && senderJid === selfJid);
         } catch (e) {
-            // fall back to the original loose check if normalization fails
             return m.key.participant === ownerJid || from === ownerJid;
         }
     }
 
-    // Pairing Code
+    // Pairing Code (දෝෂය වළක්වා ගැනීමට කාලය තත්පර 8 දක්වා වැඩි කරන ලදී)
     if (!sock.authState.creds.registered) {
         setTimeout(async () => {
             try {
@@ -219,7 +206,7 @@ async function connectToWhatsApp() {
             } catch (error) {
                 console.error("Pairing error:", error);
             }
-        }, 5000);
+        }, 8000);
     }
 
     // Connection Updates
@@ -244,11 +231,7 @@ async function connectToWhatsApp() {
 
     sock.ev.on('creds.update', saveCreds);
 
-    // ------------------------------------------------------------
-    // FIX: merged the two separate messages.upsert listeners
-    // (auto-read + main handler) into one, so there's a single
-    // source of truth for "what happens on a new message".
-    // ------------------------------------------------------------
+    // Messages Upsert Handler
     sock.ev.on('messages.upsert', async ({ messages }) => {
         const m = messages[0];
         if (!m.message) return;
@@ -359,10 +342,7 @@ async function connectToWhatsApp() {
         const args = body.slice(prefix.length).trim().split(/ +/);
         const command = args.shift().toLowerCase();
 
-        // ============================================
-        // 📜 MENU & HELP SYSTEM
-        // ============================================
-
+        // Menu Command
         if (command === 'menu' || command === 'help') {
             await react('📜');
             const { date, time } = getDateTime();
@@ -381,45 +361,21 @@ async function connectToWhatsApp() {
 │
 │ 🤖 *AI COMMANDS*
 │ ├ .ai [query]
-│ ├ .gpt [query]
-│ ├ .chatgpt [query]
-│ └ .imagine [prompt]
-│
-│ 📥 *DOWNLOADER*
-│ ├ .yt [url]
-│ ├ .ytmp3 [url]
-│ ├ .tiktok [url]
-│ ├ .fb [url]
-│ ├ .ig [url]
-│ └ .twitter [url]
+│ └ .gpt [query]
 │
 │ 🎨 *MEDIA TOOLS*
-│ ├ .sticker / .s
-│ ├ .toimage
-│ ├ .tovideo
-│ └ .removebg
+│ └ .sticker / .s
 │
 │ 🔍 *SEARCH*
 │ ├ .wiki [term]
-│ ├ .weather [city]
-│ ├ .google [query]
-│ └ .yts [query]
+│ └ .weather [city]
 │
 │ 🛠️ *TOOLS*
-│ ├ .ping
-│ ├ .translate [text]
-│ ├ .qr [text]
-│ └ .calculator [expr]
-│
-│ 🎮 *FUN*
-│ ├ .joke
-│ ├ .quote
-│ └ .meme
+│ └ .ping
 │
 ${isOwner ? `│ 👑 *OWNER*
 │ ├ .settings
 │ ├ .stats
-│ ├ .broadcast [msg]
 │ └ .restart
 │` : ''}
 ╰━━━━━━━━━━━━━━━━━╯
@@ -438,10 +394,7 @@ ${isOwner ? `│ 👑 *OWNER*
             return;
         }
 
-        // ============================================
-        // ⚡ PING COMMAND
-        // ============================================
-
+        // Ping Command
         if (command === 'ping') {
             await react('⚡');
             const start = Date.now();
@@ -454,47 +407,7 @@ ${isOwner ? `│ 👑 *OWNER*
             return;
         }
 
-        // ============================================
-        // 🔥 ALIVE COMMAND
-        // ============================================
-
-        if (command === 'alive') {
-            await react('🔥');
-            const { date, time } = getDateTime();
-            const uptime = process.uptime();
-            const hours = Math.floor(uptime / 3600);
-            const minutes = Math.floor((uptime % 3600) / 60);
-
-            const aliveText = `
-⚡ *HDNOVA-OFC IS ONLINE* 💖
-
-📅 *DATE:* ${date}
-⏰ *TIME:* ${time}
-⏱️ *UPTIME:* ${hours}h ${minutes}m
-
-💬 *Messages:* ${stats.totalMessages}
-🤖 *AI Requests:* ${stats.aiRequests}
-📥 *Downloads:* ${stats.downloads}
-🎨 *Stickers:* ${stats.stickers}
-
-> _HDNOVA-OFC - Cyber System_
-`.trim();
-
-            try {
-                await sock.sendMessage(from, {
-                    image: { url: 'https://i.ibb.co/Fb4QgTdR/image.jpg' },
-                    caption: aliveText
-                }, { quoted: m });
-            } catch (e) {
-                await sock.sendMessage(from, { text: aliveText }, { quoted: m });
-            }
-            return;
-        }
-
-        // ============================================
-        // 🤖 AI COMMANDS
-        // ============================================
-
+        // AI Command
         if (command === 'ai' || command === 'gpt' || command === 'chatgpt') {
             const query = args.join(' ');
             if (!query) {
@@ -528,10 +441,7 @@ ${isOwner ? `│ 👑 *OWNER*
             return;
         }
 
-        // ============================================
-        // 🔍 WIKIPEDIA SEARCH
-        // ============================================
-
+        // Wiki Command
         if (command === 'wiki' || command === 'search') {
             const query = args.join(' ');
             if (!query) {
@@ -571,10 +481,7 @@ ${wikiRes.data.extract}
             return;
         }
 
-        // ============================================
-        // 🌤️ WEATHER
-        // ============================================
-
+        // Weather Command
         if (command === 'weather') {
             const city = args.join(' ');
             if (!city) {
@@ -610,10 +517,7 @@ ${wikiRes.data.extract}
             return;
         }
 
-        // ============================================
-        // 🎨 STICKER MAKER
-        // ============================================
-
+        // Sticker Command
         if (command === 's' || command === 'sticker') {
             const quotedMsg = m.message.extendedTextMessage?.contextInfo?.quotedMessage;
 
@@ -655,10 +559,7 @@ ${wikiRes.data.extract}
             return;
         }
 
-        // ============================================
-        // 👑 OWNER SETTINGS
-        // ============================================
-
+        // Settings Command
         if (isOwner && command === 'settings') {
             const settingsText = `
 ╭━━━ *HDNOVA SETTINGS* ━━━╮
@@ -671,52 +572,13 @@ ${wikiRes.data.extract}
 │ 🔔 Owner Notifications: ${botSettings.ownerNotifications ? '✅ ON' : '❌ OFF'}
 │
 ╰━━━━━━━━━━━━━━━━━━━━╯
-
-*Toggle Commands:*
-.autostatus [on/off]
-.autodownload [on/off]
-.autoread [on/off]
-.antidelete [on/off]
-.callshield [on/off]
-.notifications [on/off]
 `.trim();
 
             await sock.sendMessage(from, { text: settingsText }, { quoted: m });
             return;
         }
 
-        // Setting Toggles (Owner Only)
-        if (isOwner) {
-            const toggleCommands = {
-                'autostatus': 'autoStatusSeen',
-                'autodownload': 'autoStatusDownload',
-                'autoread': 'autoRead',
-                'antidelete': 'antiDelete',
-                'callshield': 'callShield',
-                'notifications': 'ownerNotifications'
-            };
-
-            if (toggleCommands[command]) {
-                const action = args[0]?.toLowerCase();
-                if (action === 'on' || action === 'off') {
-                    botSettings[toggleCommands[command]] = action === 'on';
-                    await saveSettings();
-                    await sock.sendMessage(from, {
-                        text: `${action === 'on' ? '✅' : '❌'} *${command.toUpperCase()} ${action.toUpperCase()}*`
-                    }, { quoted: m });
-                } else {
-                    await sock.sendMessage(from, {
-                        text: `Usage: .${command} [on/off]`
-                    }, { quoted: m });
-                }
-                return;
-            }
-        }
-
-        // ============================================
-        // 📊 STATISTICS (Owner Only)
-        // ============================================
-
+        // Stats Command
         if (isOwner && command === 'stats') {
             const uptime = process.uptime();
             const hours = Math.floor(uptime / 3600);
@@ -732,9 +594,6 @@ ${wikiRes.data.extract}
 │ 👥 *Total Groups:* ${totalGroups}
 │ 💬 *Messages:* ${stats.totalMessages}
 │ 🤖 *AI Requests:* ${stats.aiRequests}
-│ 📥 *Downloads:* ${stats.downloads}
-│ 🎨 *Stickers:* ${stats.stickers}
-│ 👁️ *Status Processed:* ${stats.statusProcessed}
 │ ⏱️ *Uptime:* ${hours}h ${minutes}m
 │ 💾 *Memory:* ${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB
 │
@@ -745,10 +604,7 @@ ${wikiRes.data.extract}
             return;
         }
 
-        // ============================================
-        // 🔁 RESTART (Owner Only)
-        // ============================================
-
+        // Restart Command
         if (isOwner && command === 'restart') {
             await sock.sendMessage(from, { text: '🔄 *Restarting bot...*' }, { quoted: m });
             process.exit(0);
@@ -756,10 +612,7 @@ ${wikiRes.data.extract}
 
     });
 
-    // ============================================
-    // 🛡️ ANTI-DELETE SYSTEM
-    // ============================================
-
+    // Anti-Delete System
     sock.ev.on('messages.update', async (updates) => {
         if (!botSettings.antiDelete) return;
 
@@ -797,10 +650,7 @@ ${wikiRes.data.extract}
         }
     });
 
-    // ============================================
-    // 📵 CALL SHIELD
-    // ============================================
-
+    // Call Shield
     sock.ev.on('call', async (calls) => {
         if (!botSettings.callShield) return;
 
